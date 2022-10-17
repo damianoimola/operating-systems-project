@@ -13,12 +13,13 @@ void receive3();
 bool want_cancel();
 void user_access();
 void setup_events();
-int receive1(int *n, int *m);
+void receive1(int *n, int *m);
 void check_semaphore_state();
 void get_user_info(long choice);
+int receive_seats_map(int n, int m);
 long get_port(int argc, char *argv[]);
 bool check_email_format(char *email);
-bool send2(int n, int m, int seats_free);
+bool send2(int n, int m);
 char *get_address(int argc, char *argv[]);
 char *check_address_format(char *address);
 void startup_connection(long port, char *address);
@@ -63,7 +64,6 @@ int main(int argc, char *argv[]){
     int m;              // # cols
     long port;          // port number
     char *address;      // ip address
-    int seats_free;     // number of seats available
     
     // retieve input's information
     port = get_port(argc, argv);
@@ -80,9 +80,9 @@ int main(int argc, char *argv[]){
     
     // handling the canceletion of the booking
     if(want_cancel() == false){
-        seats_free = receive1(&n, &m);
+        receive1(&n, &m);
         
-        if(send2(n, m, seats_free))
+        if(send2(n, m))
             receive3();
         else
             // cancealing timer, because user doesn't
@@ -303,9 +303,9 @@ void user_access(){
                 puts("Warning, invalid input");
                 break;
         }
-        
-        get_user_info(choice);
     } while(flag == false);
+    
+    get_user_info(choice);
 }
 
 
@@ -390,14 +390,9 @@ void send0(){
 }
 
 
-// receiving seats availabilty from server
-int receive1(int *n, int *m){
-    char *buff;                                     // temporary buffer
-    ssize_t seat_len;                               // max # of digits for seats number
-    char *temp;                                     // temporary buffer for printing seats map with padding
-    int seats_free = 0;                             // number of available seats
+void receive1(int *n, int *m){
     int res;
-    
+    char *buff;                                                 // temporary array
     
     // reading n
     if((buff = malloc(sizeof(int) + sizeof(char))) == NULL)
@@ -428,17 +423,30 @@ int receive1(int *n, int *m){
     *m = *(int *)buff;
     
     
-    
-    if((buff = realloc(buff, (*m)*sizeof(char))) == NULL)
-        error("memory re-allocation failed.");
-    
 #ifdef DEBUG
     printf("rows: %d, cols: %d\n", *n, *m);
 #endif
+}
+
+
+
+
+int receive_seats_map(int n, int m){
+    int seats_free = 0;                             // number of available seats
+    ssize_t seat_len;                               // max # of digits for seats number
+    int res;
+    char *temp;                                     // temporary buffer for printing seats map with padding
+    char *buff;                                                 // temporary array
+        
+        
+        
+        
+    if((buff = malloc(m*sizeof(char))) == NULL)
+        error("memory allocation failed.");
     
     
     // printing the seats map
-    seat_len = log10((*n)*(*m)) + 2; // n*m = total seats
+    seat_len = log10(n * m) + 2; // n*m = total seats
     
     if((temp = malloc(seat_len)) == NULL)
         error("memory allocation failed.");
@@ -449,8 +457,6 @@ int receive1(int *n, int *m){
     temp[seat_len-1] = '\0';
     
     
-    // check for the round
-    check_semaphore_state(conn_s);
     
     
     // trigger the alarm timer: not needed in "send0" method
@@ -460,9 +466,10 @@ int receive1(int *n, int *m){
     
     puts("");
     
-    for(int i=0; i<(*n); i++){
+    
+    for(int i=0; i<n; i++){
         // reads one complete row from server
-        res = read(conn_s, buff, (*m)*sizeof(char));               // read 3
+        res = read(conn_s, buff, m*sizeof(char));               // read 3
     
         if(res == -1){
             error("read 3 failed.");
@@ -472,8 +479,8 @@ int receive1(int *n, int *m){
         
         printf("ROW -> %d\t", i + 1);
         
-        for(int j=0; j<(*m); j++){
-            int current = i*(*m)+j+1;
+        for(int j=0; j<m; j++){
+            int current = i*m+j+1;
             ssize_t current_seat_len = log10(current) + 1;
             char *string;
             
@@ -513,7 +520,6 @@ int receive1(int *n, int *m){
         puts("");
     }
     
-    free(buff);
     free(temp);
     
     
@@ -535,8 +541,10 @@ int receive1(int *n, int *m){
 }
 
 
+
 // sending the seats choice to the server
-bool send2(int n, int m, int seats_free){
+bool send2(int n, int m){
+    int seats_free;                             // number of available seats
     char *redundancy;                                           // flag to check about seats booked multiple times
     char *buff;                                                 // temporary array
     char *msg;                                                  // variable to handle parametrized messages
@@ -547,50 +555,57 @@ bool send2(int n, int m, int seats_free){
     ssize_t seat_size = (log10(n*m) + 2) * sizeof(char);        // # of max digit of seat number
     
     
-    // retrieving # of seats
-    do{
-        bookings = get_long("\nEnter the number of seats to book ('0' included): ");
-    } while(bookings < 0 || bookings > seats_free);             // seats_free < n*m
     
     
     
-    if(bookings == 0){
-        // sending seats number to server
-        if((write(conn_s, "0", sizeof(char))) == -1)                                     // write 4
-            error("write 4 failed");
-        
-        raise(SIGUSR1);
-    }
-    
-    
-    
-    book_size = (log10(bookings) + 2) * sizeof(char);
-    
-    if((buff = malloc(seat_size)) == NULL)
-        error("memory allocation failed.");
-    
-    snprintf(buff, book_size, "%ld", bookings);
-    
-#ifdef DEBUG
-    printf("buff: %s\n", buff);
-    fflush(stdout);
-#endif
-    
-    
-    // sending seats number to server
-    if((write(conn_s, buff, book_size)) == -1)                                     // write 4
-        error("write 4 failed");
-    
-    // to avoid duplicates
-    if((redundancy = malloc(sizeof(char) * (n * m))) == NULL)
-        error("memory allocation failed");
-    
-    if((msg = malloc(MSG_SIZE * sizeof(char))) == NULL)
-        error("memory allocation failed");
     
     // recover seats and sending to server
     // retrieve the answer
     do{
+    
+        seats_free = receive_seats_map(n, m);
+    
+        // retrieving # of seats
+        do{
+            bookings = get_long("\nEnter the number of seats to book ('0' included): ");
+        } while(bookings < 0 || bookings > seats_free);             // seats_free < n*m
+        
+        
+        
+        if(bookings == 0){
+            // sending seats number to server
+            if((write(conn_s, "0", sizeof(char))) == -1)                                     // write 4
+                error("write 4 failed");
+            
+            raise(SIGUSR1);
+        }
+        
+        
+        
+        book_size = (log10(bookings) + 2) * sizeof(char);
+        
+        if((buff = realloc(buff, seat_size)) == NULL)
+            error("memory re-allocation failed.");
+        
+        snprintf(buff, book_size, "%ld", bookings);
+        
+#ifdef DEBUG
+    printf("buff: %s\n", buff);
+    fflush(stdout);
+#endif
+        
+        
+        // sending seats number to server
+        if((write(conn_s, buff, book_size)) == -1)                                     // write 4
+            error("write 4 failed");
+        
+        // to avoid duplicates
+        if((redundancy = malloc(sizeof(char) * (n * m))) == NULL)
+            error("memory allocation failed");
+        
+        if((msg = malloc(MSG_SIZE * sizeof(char))) == NULL)
+            error("memory allocation failed");
+    
         bzero(redundancy, sizeof(char) * (n * m));
         for(int i=0; i<bookings; i++){
             
@@ -619,6 +634,13 @@ bool send2(int n, int m, int seats_free){
             if((write(conn_s, buff, log10(seat) + 2)) == -1)                       // write 5
                 error("write 5 failed");
         }
+        
+        
+        
+        // check for the round
+        check_semaphore_state(conn_s);
+        
+        
         
         // retrieving the answer from server
         res = read(conn_s, buff, 2 * sizeof(char));                           // read 6

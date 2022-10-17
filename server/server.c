@@ -45,6 +45,8 @@ int user_access();
 int get_decision();
 void setup_events();
 void release_token();
+void cancel_events();
+void restore_events();
 void wait_for_token();
 void print_accounts();
 char *get_random_code();
@@ -172,6 +174,10 @@ void event_handler(int signal){
 
 
 int main(int argc, char *argv[]){
+    
+    cancel_events();
+    return 0;
+    
     int         list_s;                       // listening socket
     long        port;                         // port used for the connection
     struct      sockaddr_in connaddr;         // connection socket address
@@ -626,10 +632,6 @@ void receive0(){
 
 // sending to the client, the seats availability, row by row
 void send1(){
-    bool cinema_full = true;
-    char *tmp;
-  
-    
     // sends # rows to the client
     if((write(conn_s, (char *) (&n), sizeof(int))) == -1)                                   // write 1
         error("server: write 1 failed");
@@ -637,11 +639,13 @@ void send1(){
     // sends # cols to the client
     if((write(conn_s, (char *) (&m), sizeof(int))) == -1)                                   // write 2
         error("server: write 2 failed");
-    
-    // waiting for the round
-    wait_for_token(BOOKING_CRITICAL_SECTION_INDEX);
-    
-    
+}
+
+
+void send_seats_map(){
+    char *tmp;
+    bool cinema_full = true;
+        
     // sends a seats row to the client
     for(int i=0; i<n; i++){
         
@@ -655,17 +659,11 @@ void send1(){
                 cinema_full = false;
         }
     }
-    
-#ifdef DEBUG
-    printf("n: %d; m: %d\n", n, m);
-    fflush(stdout);
-#endif
-    
+
     if(cinema_full)
         raise(SIGINT);
+    
 }
-
-
 
 
 // receiving from client the seats to book
@@ -676,41 +674,56 @@ bool receive2(int **seats_array, int *bookings) {
     int bookable;                                                   // checks the availability of seats
     ssize_t seat_size = (log10(n * m) + 2) * sizeof(char);          // # max digits for a seat
 
+    
+    
+    
+#ifdef DEBUG
+    printf("n: %d; m: %d\n", n, m);
+    fflush(stdout);
+#endif
+    
+    
     if((buff = malloc(seat_size)) == NULL)
         error("server: memory allocation failed.");
     
+    do {
+        
+        send_seats_map();
+        
+        
+        // receive from client the number of seats to book
+        res = read(conn_s, buff, seat_size);                                      // read 4
+        
+        if(res == -1){
+            error("server read 4 failed.");
+        } else if(res == 0)
+            raise(SIGINT);
+        
+        
+        // if buff is '0', close connection -> client doesn't want booking anymore
+        if(buff[0] == '0'){
+            free(buff);
+            close(conn_s);
+            pthread_exit(&status);
+        }
+        
+        
+        if(((*bookings) = atoi(buff)) == 0)
+            error("server: atoi failed.");
+        
+        if((*seats_array = malloc((*bookings) * sizeof(int))) == NULL)
+            error("server: memory allocation faield.");
     
-    // receive from client the number of seats to book
-    res = read(conn_s, buff, seat_size);                                      // read 4
-    
-    if(res == -1){
-        error("server read 4 failed.");
-    } else if(res == 0)
-        raise(SIGINT);
-    
-    
-    // if buff is '0', close connection -> client doesn't want booking anymore
-    if(buff[0] == '0'){
-        release_token(BOOKING_CRITICAL_SECTION_INDEX);
-        free(buff);
-        close(conn_s);
-        pthread_exit(&status);
-    }
-    
-    
-    if(((*bookings) = atoi(buff)) == 0)
-        error("server: atoi failed.");
-    
-    if((*seats_array = malloc((*bookings) * sizeof(int))) == NULL)
-        error("server: memory allocation faield.");
-    
+        
+        
+        
+        
     
 #ifdef DEBUG
     printf("bookings: %d\n", *bookings);
     fflush(stdout);
 #endif
     
-    do {
         // initializing the bookability to "OK" (true)
         bookable = 0;
 
@@ -738,7 +751,17 @@ bool receive2(int **seats_array, int *bookings) {
             printf("memory content %c\n", *(char *)(cinema + ((*seats_array)[i] - 1) * sizeof(char)));
             fflush(stdout);
 #endif
-            
+        }
+        
+        
+    
+
+        // waiting for the round
+        wait_for_token(BOOKING_CRITICAL_SECTION_INDEX);
+        
+        
+        
+        for (int i = 0; i < *bookings; i++) {
             if (*(char *)(cinema + ((*seats_array)[i] - 1) * sizeof(char)) != '0') {
                 bookable = 1;
 #ifdef DEBUG
@@ -754,12 +777,15 @@ bool receive2(int **seats_array, int *bookings) {
 #ifdef DEBUG
         printf("sending from write 6: %d, %s\n", atoi(buff), buff);
         fflush(stdout);
+        puts("starting sleep");
+        sleep(2);
 #endif
         
         // sending bookable variable
         if((write(conn_s, buff, 2 * sizeof(char))) == -1)                           // write 6
             error("server: write 6 failed.");
 
+        
         if(bookable != 0){
             // if seats are not bookable, waiting for the will of retry answer
             res = read(conn_s, buff, 2 * sizeof(char));                             // read 7
@@ -769,26 +795,21 @@ bool receive2(int **seats_array, int *bookings) {
             }
             else if(res == 0)
                 raise(SIGINT);
+        } else {
+            for (int i = 0; i < *bookings; i++) {
+                cinema[(*seats_array)[i] - 1] = '1';
+            }
+            
+            puts("Input gone well");
         }
+
+        
+        release_token(BOOKING_CRITICAL_SECTION_INDEX);
         
     } while (buff[0] == 'y' || buff[0] == 'Y');
 
     
-    
-    
-    
-    // handling the user answer/the correctness of the input
-    if (buff[0] == 'n' || buff[0] == 'N') {
-        puts("Input canceled");
-    }
-    else {
-        for (int i = 0; i < *bookings; i++) {
-            cinema[(*seats_array)[i] - 1] = '1';
-        }
         
-        puts("Input gone well");
-    }
-    
 #ifdef DEBUG
     printf("(SEATS) memory area content: ");
     fflush(stdout);
@@ -801,12 +822,15 @@ bool receive2(int **seats_array, int *bookings) {
     fflush(stdout);
 #endif
     
-    release_token(BOOKING_CRITICAL_SECTION_INDEX);
     
-    if(buff[0] == 'n' || buff[0] == 'N'){
+    
+    // handling the user answer/the correctness of the input
+    if (buff[0] == 'n' || buff[0] == 'N') {
+        puts("Input canceled");
         free(buff);
         return false;
     }
+
     
     free(buff);
     return true;
@@ -883,6 +907,8 @@ void wait_for_token(int sem_index){
     struct sembuf op;
     op.sem_op = -1;
     
+    cancel_events();
+    
     switch(sem_index){
         case BOOKING_CRITICAL_SECTION_INDEX:        
             // instantiating sem op structure
@@ -953,7 +979,9 @@ void release_token(int sem_index){
             error("server: semaphore operation failed.");
         
         current_account->in_critical_section = false;
+        
     } else {
+        
         op.sem_num = sem_index;
         
         if(semop(semfd, &op, 1) == -1)
@@ -965,7 +993,7 @@ void release_token(int sem_index){
         else
             in_signup_critical_section = true;
     }
-    
+    restore_events();
 }
 
 
@@ -1007,6 +1035,31 @@ char * get_random_code(){
 }
 
 
+
+
+void cancel_events(){
+    int v[7] = {SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGSEGV, SIGPIPE, SIGTERM};
+    
+    sigset_t set;
+    
+    for(int i=0; i<7; i++)
+        sigaddset(&set, v[i]);
+    
+    sigprocmask(SIG_BLOCK, &set, NULL);
+}
+
+
+
+void restore_events(){
+    int v[7] = {SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGSEGV, SIGPIPE, SIGTERM};
+    
+    sigset_t set;
+    
+    for(int i=0; i<7; i++)
+        sigaddset(&set, v[i]);
+    
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+}
 
 
 void setup_events(){
