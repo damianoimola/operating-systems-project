@@ -394,38 +394,42 @@ void receive1(int *n, int *m){
     int res;
     char *buff;                                                 // temporary array
     
-    // reading n
-    if((buff = malloc(sizeof(int) + sizeof(char))) == NULL)
+    
+    // reading n (we are reading an integer, his lenght
+    // is not more than 10 digits)
+    if((buff = malloc(10 * sizeof(char))) == NULL)
         error("memory allocation failed.");
     
-    res = read(conn_s, buff, sizeof(int));            // read 1
+    
+    
+    res = read(conn_s, buff, 10 * sizeof(char));            // read 1
     
     if(res == -1){
         error("read 1 failed.");
     } else if(res == 0)
         raise(SIGUSR1);
     
-    buff[sizeof(int)] = '\0';
-    *n = *(int *)buff;
+    *n = atoi(buff);
+    bzero(buff, 10 * sizeof(char));
     
     
     
     
     // reading m
-    res = read(conn_s, buff, sizeof(int));            // read 2
+    res = read(conn_s, buff, 10 * sizeof(char));            // read 2
     
     if(res == -1){
         error("read 2 failed.");
     } else if(res == 0)
         raise(SIGUSR1);
     
-    buff[sizeof(int)] = '\0';
-    *m = *(int *)buff;
-    
+    *m = atoi(buff);
     
 #ifdef DEBUG
     printf("rows: %d, cols: %d\n", *n, *m);
 #endif
+    
+    free(buff);
 }
 
 
@@ -740,12 +744,18 @@ void check_semaphore_state(){
     
     // endless check about server availability
     fflush(stdout);
+    
     while(buff == '0'){
         printf("|");
         fflush(stdout);
         
-        if((read(conn_s, &buff, sizeof(char))) == -1)            // read semaphore state
-            error("read semaphore state failed.");
+        redo752:
+        if((read(conn_s, &buff, sizeof(char))) == -1){            // read semaphore state
+            if(errno != EINTR){
+                error("read semaphore state failed.");
+            } else
+                goto redo752;
+        }
         
         counter++;
     }

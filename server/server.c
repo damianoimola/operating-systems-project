@@ -174,10 +174,6 @@ void event_handler(int signal){
 
 
 int main(int argc, char *argv[]){
-    
-    cancel_events();
-    return 0;
-    
     int         list_s;                       // listening socket
     long        port;                         // port used for the connection
     struct      sockaddr_in connaddr;         // connection socket address
@@ -225,8 +221,13 @@ int main(int argc, char *argv[]){
         
         socket_in_size = sizeof(struct sockaddr_in);
         
-        if ((conn_s = accept(list_s, (struct sockaddr *) &connaddr, &socket_in_size)) < 0)
-            error("server: error during the accept\n");
+        redo224:
+        if ((conn_s = accept(list_s, (struct sockaddr *) &connaddr, &socket_in_size)) < 0){
+            if(errno != EINTR){
+                error("server: error during the accept\n");
+            } else
+                goto redo224;
+        }
         
         // now the main process is connected
         connected = true;
@@ -246,7 +247,7 @@ int main(int argc, char *argv[]){
         send_timeout.tv_sec = 5; // Number of whole seconds of elapsed time
         send_timeout.tv_usec = 0; // Number of microseconds of rest of elapsed time minus tv_sec. Always less than one million
         
-        if (setsockopt (conn_s, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout)) < 0)
+        if (setsockopt(conn_s, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout)) < 0)
             error("setsockopt failed\n");
         
         
@@ -302,7 +303,7 @@ void *child_func(void *arguments){
     fflush(stdout);
 
     // closing connection socket description
-    if (close(args->conn_s) < 0)
+    if(close(args->conn_s) < 0)
         error("server: closing connection failed.");
     
     free(args->code);
@@ -337,13 +338,15 @@ int get_decision(){
     if((buff = malloc(sizeof(char))) == NULL)
         error("server: memory allocation failed");
     
-    
+    redo339:
     // reading the decision from the client
     res = read(conn_s, buff, sizeof(char));                                     // read -1
 
-    if(res == -1){
+    if(res == -1 && errno != EINTR){
         error("read -1 failed");
-    } else if(res == 0)
+    }else if (errno == EINTR){
+        goto redo339;
+    }else if(res == 0)
         raise(SIGINT);
     
     
@@ -604,9 +607,14 @@ void receive0(){
     if((buff = malloc(sizeof(char) * CODE_SIZE)) == NULL)
         error("memory allocation failed");
     
+    redo608:
     // reading the code from the client
-    if((read(conn_s, buff, CODE_SIZE)) == -1)                                     // read 0.1
-        error("read 0.1 failed");
+    if((read(conn_s, buff, CODE_SIZE)) == -1){                                     // read 0.1
+        if(errno != EINTR){
+            error("read 0.1 failed");
+        }else 
+            goto redo608;
+    }
     
 #ifdef DEBUG
     printf("read %s\n", buff);
@@ -632,13 +640,35 @@ void receive0(){
 
 // sending to the client, the seats availability, row by row
 void send1(){
+    char *buff;
+    ssize_t len;
+    
+    
+    // an integer lenght is 10 at most, and
+    // 11th is for the snprintf's '\0'
+    len = 11;
+    
+    if((buff = malloc(len * sizeof(char))) == NULL)
+        error("server: memory allocation failed");
+    
+    
+    
+    snprintf(buff, len * sizeof(char), "%d", n);
+    
     // sends # rows to the client
-    if((write(conn_s, (char *) (&n), sizeof(int))) == -1)                                   // write 1
+    if((write(conn_s, buff, (len - 1) * sizeof(char))) == -1)                                   // write 1
         error("server: write 1 failed");
     
+    
+    
+    snprintf(buff, len * sizeof(char), "%d", m);
+    
     // sends # cols to the client
-    if((write(conn_s, (char *) (&m), sizeof(int))) == -1)                                   // write 2
+    if((write(conn_s, buff, (len - 1) * sizeof(char))) == -1)                                   // write 2
         error("server: write 2 failed");
+    
+    
+    free(buff);
 }
 
 
@@ -694,8 +724,11 @@ bool receive2(int **seats_array, int *bookings) {
         // receive from client the number of seats to book
         res = read(conn_s, buff, seat_size);                                      // read 4
         
-        if(res == -1){
+        redo725:
+        if(res == -1 && errno != EINTR){
             error("server read 4 failed.");
+        } else if(errno == EINTR){
+            goto redo725;
         } else if(res == 0)
             raise(SIGINT);
         
@@ -734,10 +767,12 @@ bool receive2(int **seats_array, int *bookings) {
             // receiving the seat from client
             res = read(conn_s, buff, seat_size);                        // read 5 
             
-            if(res == -1){        
+            redo768:
+            if(res == -1 && errno != EINTR){        
                 error("error: read 5 failed.");
-            }
-            else if(res == 0)
+            } else if(errno == EINTR){
+                goto redo768;
+            } else if(res == 0)
                 raise(SIGINT);
             
             if(((*seats_array)[i] = atoi(buff)) == 0)
@@ -790,10 +825,12 @@ bool receive2(int **seats_array, int *bookings) {
             // if seats are not bookable, waiting for the will of retry answer
             res = read(conn_s, buff, 2 * sizeof(char));                             // read 7
             
-            if(res == -1){        
+            redo826:
+            if(res == -1 && errno != EINTR){        
                 error("server: read 7 failed.");
-            }
-            else if(res == 0)
+            } else if(errno == EINTR){
+                goto redo826;
+            } else if(res == 0)
                 raise(SIGINT);
         } else {
             for (int i = 0; i < *bookings; i++) {
@@ -809,7 +846,6 @@ bool receive2(int **seats_array, int *bookings) {
     } while (buff[0] == 'y' || buff[0] == 'Y');
 
     
-        
 #ifdef DEBUG
     printf("(SEATS) memory area content: ");
     fflush(stdout);
@@ -821,7 +857,6 @@ bool receive2(int **seats_array, int *bookings) {
     puts("");
     fflush(stdout);
 #endif
-    
     
     
     // handling the user answer/the correctness of the input
@@ -885,8 +920,8 @@ bool remove_booking(char *code){
             memcpy(buff, booking_addr + (i * CODE_SIZE), CODE_SIZE);
             
 #ifdef DEBUG
-        printf("buff %s, ", buff);
-        printf("code %s\n", code);
+            printf("buff %s, ", buff);
+            printf("code %s\n", code);
 #endif
             
             if(strcmp(buff, code) == 0){
@@ -915,6 +950,7 @@ void wait_for_token(int sem_index){
             op.sem_num = sem_index;
             op.sem_flg = IPC_NOWAIT;
     
+            redo951:
             while(semop(semfd, &op, 1) == -1){
                 if(errno != EAGAIN) // on semop failure with IPC_NOWAIT flag
                     error("server: semaphore operation failed.");
@@ -924,6 +960,9 @@ void wait_for_token(int sem_index){
                     error("server: write semaphore state (0) failed");
                 
                 sleep(1);
+
+                if(errno == EINTR)
+                    goto redo951;
             }
         
             // sends the semaphore state to the client
@@ -940,8 +979,13 @@ void wait_for_token(int sem_index){
             op.sem_num = sem_index;
             op.sem_flg = 0;
             
-            if(semop(semfd, &op, 1) == -1)
-                error("server: semaphore operation failed.");
+            redo980:
+            if(semop(semfd, &op, 1) == -1){
+                if(errno != EINTR){
+                    error("server: semaphore operation failed.");
+                }else
+                    goto redo980;
+            }
             
             // to better handle signals
             in_signup_critical_section = true;
@@ -953,8 +997,14 @@ void wait_for_token(int sem_index){
             op.sem_num = 0;
             op.sem_flg = 0;
             
-            if(semop(current_account->semfd, &op, 1) == -1)
-                error("server: semaphore operation failed.");
+            redo996:
+            if(semop(current_account->semfd, &op, 1) == -1){
+                if(errno != EINTR){
+                    error("server: semaphore operation failed.");
+                } else
+                    goto redo996;
+            }
+            
             current_account->in_critical_section = true;
             break;
             
@@ -1345,11 +1395,14 @@ void get_user_info(int access_type){
 #ifdef DEBUG
         puts("EMAIL");
 #endif
+        redo1392:
         // EMAIL
         res = read(conn_s, email, MAX_INPUT_SIZE * sizeof(char));                                     // read -2.1.1
 
-        if(res == -1){
+        if(res == -1 && errno != EINTR){
             error("read -2.1.1 failed");
+        } else if(errno == EINTR) {
+            goto redo1392;
         } else if(res == 0)
             raise(SIGINT);
         
@@ -1359,11 +1412,14 @@ void get_user_info(int access_type){
 #ifdef DEBUG
             puts("USERNAME");
 #endif
+            redo1409:
             // USERNAME
             res = read(conn_s, username, MAX_INPUT_SIZE * sizeof(char));                                     // read -2.1.2
 
-            if(res == -1){
+            if(res == -1 && errno != EINTR){
                 error("read -2.1.2 failed");
+            } else if(errno == EINTR) {
+                goto redo1409;
             } else if(res == 0)
                 raise(SIGINT);
         } else if(access_type == WANT_TO_SIGN_IN){
@@ -1376,11 +1432,13 @@ void get_user_info(int access_type){
 #ifdef DEBUG
         puts("PASSWORD");
 #endif
+        redo1429:
         res = read(conn_s, password, MAX_INPUT_SIZE * sizeof(char));                                     // read -2.1.3
 
-        
-        if(res == -1){
+        if(res == -1 && errno != EINTR){
             error("read -2.1.3 failed");
+        } else if(errno == EINTR) {
+            goto redo1429;
         } else if(res == 0)
             raise(SIGINT);
         
@@ -1399,7 +1457,6 @@ void get_user_info(int access_type){
             if(check_mail_exists(email) == NULL){
                 ok = true;
                 init_reservation_list(&reservation);
-                
                 
                 
                 current_account = add_person_after(accounts, username, email, password, reservation);
@@ -1475,12 +1532,14 @@ int user_access(){
         error("server: memory allocation failed");
     
     
+    redo1529:
     // reading the decision from the client
     res = read(conn_s, buff, sizeof(char));                                     // read -2
 
-    
     if(res == -1){
         error("read -2 failed");
+    } else if(errno == EINTR) {
+        goto redo1529;
     } else if(res == 0)
         raise(SIGINT);
     
@@ -1522,6 +1581,7 @@ person_t *create_accounts_file(){
     
     if ((file = fdopen(fd, "w+")) == NULL)
         error("server: error while conversion from file descriptor to FILE *");
+    
     
     while(getline(&buff, &size, file) > 0){
         
